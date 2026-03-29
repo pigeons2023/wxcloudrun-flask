@@ -1,85 +1,25 @@
 from datetime import datetime
-from flask import render_template, request
+from flask import request
 import requests
 import config
 from run import app
-from wxcloudrun.dao import delete_counterbyid, query_counterbyid, insert_counter, update_counterbyid
-from wxcloudrun.model import Counters, User
+from wxcloudrun.model import User
 from wxcloudrun import db
-from wxcloudrun.response import make_succ_empty_response, make_succ_response, make_err_response
-
-
-@app.route('/')
-def index():
-    """
-    :return: 返回index页面
-    """
-    return render_template('index.html')
-
-
-@app.route('/api/count', methods=['POST'])
-def count():
-    """
-    :return:计数结果/清除结果
-    """
-
-    # 获取请求体参数
-    params = request.get_json()
-
-    # 检查action参数
-    if 'action' not in params:
-        return make_err_response('缺少action参数')
-
-    # 按照不同的action的值，进行不同的操作
-    action = params['action']
-
-    # 执行自增操作
-    if action == 'inc':
-        counter = query_counterbyid(1)
-        if counter is None:
-            counter = Counters()
-            counter.id = 1
-            counter.count = 1
-            counter.created_at = datetime.now()
-            counter.updated_at = datetime.now()
-            insert_counter(counter)
-        else:
-            counter.id = 1
-            counter.count += 1
-            counter.updated_at = datetime.now()
-            update_counterbyid(counter)
-        return make_succ_response(counter.count)
-
-    # 执行清0操作
-    elif action == 'clear':
-        delete_counterbyid(1)
-        return make_succ_empty_response()
-
-    # action参数错误
-    else:
-        return make_err_response('action参数错误')
-
-
-@app.route('/api/count', methods=['GET'])
-def get_count():
-    """
-    :return: 计数的值
-    """
-    counter = Counters.query.filter(Counters.id == 1).first()
-    return make_succ_response(0) if counter is None else make_succ_response(counter.count)
+from wxcloudrun.response import make_succ_response, make_err_response
 
 
 @app.route('/api/login', methods=['POST'])
 def login():
     """
-    :return: 登录结果
+    用户登录接口
+    接收姓名+学号，同时绑定微信openid
     """
     # 获取请求体参数
     params = request.get_json()
 
     # 检查参数
     if 'name' not in params or 'student_id' not in params or 'code' not in params:
-        return make_err_response('缺少必要参数')
+        return make_err_response('缺少必要参数，需要提供name、student_id和code')
 
     name = params['name']
     student_id = params['student_id']
@@ -89,16 +29,23 @@ def login():
     appid = config.APPID
     secret = config.APPSECRET
     url = f"https://api.weixin.qq.com/sns/jscode2session?appid={appid}&secret={secret}&js_code={code}&grant_type=authorization_code"
-    response = requests.get(url)
-    data = response.json()
+    
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+    except Exception as e:
+        return make_err_response(f'微信接口调用失败: {str(e)}')
 
     if 'errcode' in data:
-        return make_err_response(data['errmsg'])
+        return make_err_response(f'微信接口错误: {data.get("errmsg", "未知错误")}')
 
-    openid = data['openid']
+    openid = data.get('openid')
+    if not openid:
+        return make_err_response('无法获取用户openid')
 
-    # 检查用户是否已存在
+    # 检查用户是否已存在（根据学号）
     existing_user = User.query.filter(User.student_id == student_id).first()
+    
     if existing_user:
         # 更新用户信息
         existing_user.name = name
@@ -112,6 +59,49 @@ def login():
             'openid': existing_user.openid
         }
         return make_succ_response(user_data)
+
+
+@app.route('/api/seed', methods=['POST'])
+def seed_test_data():
+    """
+    插入测试数据接口
+    插入姓名:test, 学号:123
+    """
+    try:
+        # 检查是否已存在
+        existing_user = User.query.filter(User.student_id == '123').first()
+        if existing_user:
+            return make_succ_response({
+                'message': '测试数据已存在',
+                'user': {
+                    'id': existing_user.id,
+                    'name': existing_user.name,
+                    'student_id': existing_user.student_id,
+                    'openid': existing_user.openid
+                }
+            })
+        
+        # 创建测试用户
+        test_user = User(
+            name='test',
+            student_id='123',
+            openid='test_openid_' + str(datetime.now().timestamp())
+        )
+        db.session.add(test_user)
+        db.session.commit()
+        
+        return make_succ_response({
+            'message': '测试数据插入成功',
+            'user': {
+                'id': test_user.id,
+                'name': test_user.name,
+                'student_id': test_user.student_id,
+                'openid': test_user.openid
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        return make_err_response(f'插入测试数据失败: {str(e)}')
     else:
         # 创建新用户
         new_user = User(
@@ -128,20 +118,3 @@ def login():
             'openid': new_user.openid
         }
         return make_succ_response(user_data)
-
-
-@app.route('/api/user/<student_id>', methods=['GET'])
-def get_user(student_id):
-    """
-    :return: 用户信息
-    """
-    user = User.query.filter(User.student_id == student_id).first()
-    if not user:
-        return make_err_response('用户不存在')
-    user_data = {
-        'id': user.id,
-        'name': user.name,
-        'student_id': user.student_id,
-        'openid': user.openid
-    }
-    return make_succ_response(user_data)

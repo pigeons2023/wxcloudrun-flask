@@ -9,6 +9,7 @@ class User(db.Model):
     __tablename__ = 'User'
 
     # 设定结构体对应表格的字段
+    
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100), nullable=False)
     student_id = db.Column(db.String(50), nullable=False, unique=True)
